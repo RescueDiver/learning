@@ -3,12 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from new.executor import Grid, copy_grid, palette, shape
+from new.executor import Grid, palette, shape
+from new.motif_tile_relation import (
+    RelationExample,
+    RelationRule,
+    apply_relation_rule,
+    learn_motif_to_tile_relation,
+)
 from new.structural_perception import (
-    Mask,
     Tile,
     color_bbox,
     color_mask_in_bbox,
+    dominant_color,
     infer_periodic_template,
     mask_signature,
     minority_motif,
@@ -25,17 +31,34 @@ class StructuralProgram:
     overlay_bbox: tuple[int, int, int, int]
     overlay_repeat: tuple[int, int]
     motif_to_tile: dict[str, Tile]
+    relation_rule: RelationRule | None = None
+    tile_other_color: int | None = None
 
     def apply(self, input_grid: Grid) -> Grid | None:
         motif = minority_motif(input_grid)
         if motif is None:
             return None
 
-        key = mask_signature(motif.mask)
-        tile = self.motif_to_tile.get(key)
+        tile: Tile | None = None
+
+        if self.relation_rule is not None and self.tile_other_color is not None:
+            binary_tile = apply_relation_rule(
+                self.relation_rule,
+                motif,
+            )
+            input_background = dominant_color(input_grid)
+            tile = tuple(
+                tuple(
+                    input_background if value else self.tile_other_color
+                    for value in row
+                )
+                for row in binary_tile
+            )
+        else:
+            key = mask_signature(motif.mask)
+            tile = self.motif_to_tile.get(key)
+
         if tile is None:
-            # Important: do not pretend to understand a new structural shape.
-            # A later relation learner can replace this lookup with a true rule.
             return None
 
         out_h, out_w = self.output_shape
@@ -75,7 +98,7 @@ def learn_periodic_motif_program(
     pairs: list[dict[str, Any]],
 ) -> StructuralLearningResult:
     """
-    Learn a reusable structural decomposition:
+    Learn a structural decomposition:
 
         input motif
             -> normalized shape
@@ -85,8 +108,13 @@ def learn_periodic_motif_program(
             -> periodic base template
             + overlay
 
-    This is deliberately relationship-first. It learns WHERE a motif goes
-    and HOW its shape is reused, rather than searching raw pixel edits.
+    Then learn the missing relationship:
+
+        input motif
+            -> periodic base tile
+
+    That second relationship is validated with leave-one-out folds before it
+    is allowed to predict an unseen test motif.
     """
     if not pairs:
         return StructuralLearningResult(None, False, (), ("no training pairs",))
@@ -139,6 +167,8 @@ def learn_periodic_motif_program(
     repeat_factors: set[tuple[int, int]] = set()
     motif_to_tile: dict[str, Tile] = {}
     periods: set[tuple[int, int]] = set()
+    tile_other_colors: set[int] = set()
+    relation_examples: list[RelationExample] = []
     evidence: list[str] = []
 
     top, left, bottom, right = overlay_bbox
@@ -176,6 +206,7 @@ def learn_periodic_motif_program(
                 tuple(evidence),
                 ("motif repeat factor changed after overlay selection",),
             )
+
         repeated = tile_mask(motif.mask, row_repeat, col_repeat)
         observed_overlay = color_mask_in_bbox(
             pair["output"],
@@ -222,6 +253,36 @@ def learn_periodic_motif_program(
             )
 
         motif_to_tile[key] = periodic.tile
+
+        input_background = dominant_color(pair["input"])
+        tile_values = {
+            value
+            for row in periodic.tile
+            for value in row
+        }
+
+        if input_background in tile_values and len(tile_values) == 2:
+            other_color = next(
+                value
+                for value in tile_values
+                if value != input_background
+            )
+            tile_other_colors.add(other_color)
+
+            target = tuple(
+                tuple(
+                    1 if value == input_background else 0
+                    for value in row
+                )
+                for row in periodic.tile
+            )
+            relation_examples.append(
+                RelationExample(
+                    motif=motif,
+                    target=target,
+                )
+            )
+
         evidence.append(
             f"pair {index}: motif {key} repeats "
             f"{row_repeat}x{col_repeat} into overlay; "
@@ -244,6 +305,46 @@ def learn_periodic_motif_program(
             ("periodic base dimensions change across training pairs",),
         )
 
+    relation_rule: RelationRule | None = None
+    relation_other_color: int | None = None
+    unresolved: list[str] = []
+
+    if (
+        len(relation_examples) == len(pairs)
+        and len(tile_other_colors) == 1
+    ):
+        relation_result = learn_motif_to_tile_relation(
+            relation_examples,
+        )
+
+        evidence.append(
+            f"motif->tile relation candidates searched: "
+            f"{relation_result.candidate_count}"
+        )
+        evidence.extend(
+            f"LOO {detail}"
+            for detail in relation_result.fold_details
+        )
+
+        if (
+            relation_result.rule is not None
+            and relation_result.exact_all
+            and relation_result.loo_passed
+        ):
+            relation_rule = relation_result.rule
+            relation_other_color = next(iter(tile_other_colors))
+            evidence.append(
+                f"accepted motif->tile rule: {relation_rule.name}"
+            )
+        else:
+            unresolved.append(
+                "no reusable motif->periodic-tile rule passed leave-one-out"
+            )
+    else:
+        unresolved.append(
+            "periodic tile does not have one stable binary color relationship"
+        )
+
     program = StructuralProgram(
         output_shape=output_shape,
         period=next(iter(periods)),
@@ -251,20 +352,22 @@ def learn_periodic_motif_program(
         overlay_bbox=overlay_bbox,
         overlay_repeat=overlay_repeat,
         motif_to_tile=motif_to_tile,
+        relation_rule=relation_rule,
+        tile_other_color=relation_other_color,
     )
 
-    exact = True
-    for pair in pairs:
-        prediction = program.apply(pair["input"])
-        if prediction != pair["output"]:
-            exact = False
-            break
+    exact = all(
+        program.apply(pair["input"]) == pair["output"]
+        for pair in pairs
+    )
 
-    unresolved: list[str] = []
-    if len(motif_to_tile) == len(pairs):
+    # If no relation rule passed LOO, exact training reconstruction can still
+    # come from the observed motif->tile associations. That is useful for
+    # structural diagnosis, but it is not allowed to generalize to a new motif.
+    if relation_rule is None and len(motif_to_tile) == len(pairs):
         unresolved.append(
-            "periodic tile is still associated with observed motif shape; "
-            "a new motif needs a learned relational rule before test prediction"
+            "training is exact by observed motif/template associations only; "
+            "unseen motifs remain blocked from prediction"
         )
 
     return StructuralLearningResult(
@@ -275,23 +378,18 @@ def learn_periodic_motif_program(
     )
 
 
-
 def _choose_overlay_color(
     pairs: list[dict[str, Any]],
     motifs: list[Any],
     candidate_colors: set[int],
 ) -> tuple[int, tuple[int, int, int, int], tuple[int, int]] | None:
     """
-    Pick the added output color by structural evidence, not by assuming only
-    one new color exists.
+    Pick the added output color by structural evidence.
 
     A valid overlay color must:
       1. have the same bounding box in every training output,
       2. have a box that is an integer multiple of each input motif,
       3. reproduce the output color mask exactly when the motif is tiled.
-
-    This distinguishes a true overlay (for eee78d87: color 9) from a new
-    background/template color that also happens to be absent from the input.
     """
     choices: list[
         tuple[int, tuple[int, int, int, int], tuple[int, int]]
@@ -358,9 +456,6 @@ def _choose_overlay_color(
     if not choices:
         return None
 
-    # Prefer the most spatially specific valid overlay if more than one
-    # survives. This avoids treating a full-grid template/background color
-    # as the semantic overlay.
     choices.sort(
         key=lambda item: (
             (item[1][2] - item[1][0] + 1)
