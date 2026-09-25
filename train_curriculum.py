@@ -6,11 +6,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from learner.features import extract_task_rule_features
-from learner.multiview import run_multiview_passes, surviving_ideas
-from learner.refinement import (
-    best_subconcept_match,
-    discover_subconcepts,
-    shared_parent_features,
+from learner.multiview import (
+    VIEW_ORDERS,
+    compare_view_results,
+    run_single_view,
 )
 
 
@@ -19,11 +18,17 @@ def load_json(path: Path):
         return json.load(file)
 
 
+def save_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Teach an ARC group from several ordered viewpoints and keep "
-            "the ideas that survive the different passes."
+            "Run the same ARC lesson in different orders, save every pass, "
+            "then compare the saved results before choosing concepts."
         )
     )
     parser.add_argument(
@@ -75,134 +80,156 @@ def main() -> None:
         for task_id in other_ids
     }
 
-    parent_features = shared_parent_features(positive_rows)
-    subconcepts = discover_subconcepts(positive_rows)
-
-    passes = run_multiview_passes(
-        positives=list(positive_rows.values()),
-        negatives=list(negative_rows.values()),
-        features_per_pass=5,
-    )
-    survivors = surviving_ideas(
-        passes,
-        minimum_passes=3,
-    )
+    safe_name = args.group.replace(" ", "_")
+    experiment_dir = Path("learned") / safe_name / "stage_6"
+    experiment_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 72)
-    print("CURRICULUM LEARNING EXPERIMENT - STAGE 5")
+    print("CURRICULUM LEARNING EXPERIMENT - STAGE 6")
     print("=" * 72)
     print(f"Human group: {args.group}")
     print(f"Teaching tasks: {len(positive_rows)}")
     print(f"Contrast tasks: {len(negative_rows)}")
     print()
 
-    print("Same lesson, different viewing orders:")
-    for result in passes:
-        print()
+    saved_passes = []
+
+    # Deliberately run one view, save it, then move to the next.
+    for pass_number, (view_name, _) in enumerate(VIEW_ORDERS, start=1):
+        print(f"PASS {pass_number}: {view_name}")
+
+        result = run_single_view(
+            view_name=view_name,
+            positives=list(positive_rows.values()),
+            negatives=list(negative_rows.values()),
+            features_per_pass=5,
+        )
+
+        pass_path = experiment_dir / (
+            f"pass_{pass_number:02d}_{view_name}.json"
+        )
+
+        pass_payload = {
+            "stage": "single_view_pass",
+            "pass_number": pass_number,
+            "human_group": args.group,
+            "view": asdict(result),
+            "teaching_task_ids": positive_ids,
+        }
+
+        save_json(pass_path, pass_payload)
+        saved_passes.append(result)
+
         print(
-            f"  {result.name}: "
-            f"{' -> '.join(result.ordered_categories)}"
+            f"  order: {' -> '.join(result.ordered_categories)}"
         )
         for feature in result.selected_features:
-            print(f"    {feature}")
+            print(f"  picked: {feature}")
+        print(f"  SAVED: {pass_path}")
+        print()
 
-    print()
-    print("Ideas that survived different viewing orders:")
-    if survivors:
-        for feature, count in survivors:
-            print(
-                f"  {feature:58s} survived {count}/{len(passes)} passes"
-            )
-    else:
-        print("  none survived the current threshold")
+    comparison = compare_view_results(
+        passes=tuple(saved_passes),
+        teaching_rows=positive_rows,
+    )
 
-    print()
-    print("Shared parent concept from ALL teaching tasks:")
-    if parent_features:
-        for feature in parent_features:
-            print(f"  {feature}")
-    else:
-        print("  (no all-pair invariant shared by every teaching task)")
+    print("=" * 72)
+    print("COMPARE THE SAVED RUNS")
+    print("=" * 72)
 
-    print()
-    print("Stage 4 sub-concepts, kept for comparison:")
-    for concept in subconcepts:
+    for idea in comparison:
         print(
-            f"  {concept.concept_id}: "
-            f"{', '.join(concept.task_ids)}"
+            f"{idea.decision:12s} "
+            f"{idea.feature:58s} "
+            f"runs={idea.selected_in_passes}/{idea.total_passes} "
+            f"tasks={idea.teaching_tasks_supported}/{idea.total_teaching_tasks}"
         )
 
-    print()
-    print("Teaching-task matches:")
-    for task_id, features in positive_rows.items():
-        concept_id, score = best_subconcept_match(
-            features,
-            subconcepts,
-        )
-        print(f"  {task_id} -> {concept_id}  score={score:.4f}")
+    parent_choices = [
+        idea.feature
+        for idea in comparison
+        if idea.decision == "KEEP_PARENT"
+    ]
+    subtype_choices = [
+        idea.feature
+        for idea in comparison
+        if idea.decision == "KEEP_SUBTYPE"
+    ]
+    weak_choices = [
+        idea.feature
+        for idea in comparison
+        if idea.decision == "WEAK"
+    ]
+
+    comparison_path = experiment_dir / "comparison.json"
+    save_json(
+        comparison_path,
+        {
+            "stage": "saved_pass_comparison",
+            "human_group": args.group,
+            "passes": [asdict(result) for result in saved_passes],
+            "compared_ideas": [asdict(idea) for idea in comparison],
+        },
+    )
+
+    final_path = experiment_dir / "final_choice.json"
+    save_json(
+        final_path,
+        {
+            "stage": "consensus_choice",
+            "human_group": args.group,
+            "parent_concepts": parent_choices,
+            "subtype_concepts": subtype_choices,
+            "weak_clues": weak_choices,
+            "rule": {
+                "parent": (
+                    "selected in at least 3 viewing orders and supported by "
+                    "every teaching task"
+                ),
+                "subtype": (
+                    "selected in at least 3 viewing orders but supported by "
+                    "only part of the teaching group"
+                ),
+                "weak": (
+                    "did not survive enough independently ordered runs"
+                ),
+            },
+        },
+    )
 
     print()
-    print("Closest outside tasks:")
-    outside_matches = []
-
-    for task_id, features in negative_rows.items():
-        concept_id, score = best_subconcept_match(
-            features,
-            subconcepts,
-        )
-        outside_matches.append((score, task_id, concept_id))
-
-    outside_matches.sort(reverse=True)
-
-    for score, task_id, concept_id in outside_matches[:20]:
-        print(f"  {score:.4f}  {task_id} -> {concept_id}")
-
-    output_dir = Path("learned")
-    output_dir.mkdir(exist_ok=True)
-
-    safe_name = args.group.replace(" ", "_")
-    output_path = output_dir / f"{safe_name}.json"
-
-    payload = {
-        "stage": "multi_view_survival",
-        "human_group": args.group,
-        "teaching_task_ids": positive_ids,
-        "view_passes": [asdict(result) for result in passes],
-        "surviving_ideas": [
-            {
-                "feature": feature,
-                "survived_passes": count,
-                "total_passes": len(passes),
-            }
-            for feature, count in survivors
-        ],
-        "parent_required_features": list(parent_features),
-        "subconcepts": [asdict(concept) for concept in subconcepts],
-        "teaching_rule_features": positive_rows,
-        "outside_matches": [
-            {
-                "task_id": task_id,
-                "subconcept_id": concept_id,
-                "score": score,
-            }
-            for score, task_id, concept_id in outside_matches
-        ],
-        "next_stage": (
-            "add finer changed-cell and reconstruction features, then rerun "
-            "the same multi-view survival test"
-        ),
-    }
-
-    with output_path.open("w", encoding="utf-8") as file:
-        json.dump(payload, file, indent=2)
+    print("FINAL CHOICE")
+    print("Parent concepts:")
+    if parent_choices:
+        for feature in parent_choices:
+            print(f"  KEEP  {feature}")
+    else:
+        print("  none")
 
     print()
-    print(f"Saved multi-view concept to: {output_path}")
+    print("Subtype concepts:")
+    if subtype_choices:
+        for feature in subtype_choices:
+            print(f"  KEEP  {feature}")
+    else:
+        print("  none")
+
+    print()
+    print("Weak clues:")
+    if weak_choices:
+        for feature in weak_choices:
+            print(f"  DROP FOR NOW  {feature}")
+    else:
+        print("  none")
+
+    print()
+    print(f"Saved comparison to: {comparison_path}")
+    print(f"Saved final choice to: {final_path}")
     print()
     print(
-        "Stage 5 changes the order of attention without changing the "
-        "teaching tasks. Ideas that recur across different orders are "
-        "treated as more trustworthy than one-pass clues."
+        "Stage 6 does not compare temporary rankings in memory and forget "
+        "them. It saves each run first, then compares those saved sets, "
+        "then makes the final keep/subtype/weak decision."
     )
 
 
