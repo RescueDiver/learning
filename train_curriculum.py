@@ -23,19 +23,13 @@ def main() -> None:
         default="missing mask",
         help="Human-created task group to learn.",
     )
-    parser.add_argument(
-        "--arcs6",
-        type=Path,
-        default=Path("..") / "ARCS6",
-        help="Path to the ARCS6 repository.",
-    )
     args = parser.parse_args()
 
-    data_path = args.arcs6 / "data" / "data.json"
-    groups_path = args.arcs6 / "task_groups.json"
+    data_path = Path("data") / "data.json"
+    groups_path = Path("data") / "task_groups.json"
 
     if not data_path.exists():
-        raise SystemExit(f"ARCS6 data not found: {data_path}")
+        raise SystemExit(f"Training data not found: {data_path}")
     if not groups_path.exists():
         raise SystemExit(f"Task groups not found: {groups_path}")
 
@@ -73,11 +67,11 @@ def main() -> None:
         group_name=args.group,
         positives=list(positive_rows.values()),
         negatives=list(negative_rows.values()),
-        concept_number=1,
+        concept_number=2,
     )
 
     print("=" * 72)
-    print("CURRICULUM LEARNING EXPERIMENT")
+    print("CURRICULUM LEARNING EXPERIMENT - STAGE 2")
     print("=" * 72)
     print(f"Human group: {args.group}")
     print(f"Positive teaching tasks: {len(positive_rows)}")
@@ -89,7 +83,7 @@ def main() -> None:
     for key in concept.strongest_features:
         value = concept.contrast[key]
         direction = "higher" if value > 0 else "lower"
-        print(f"  {key:40s} {direction:6s} strength={abs(value):.3f}")
+        print(f"  {key:50s} {direction:6s} strength={abs(value):.3f}")
 
     print()
     print("How well the learner matches Eric's sorting:")
@@ -115,7 +109,7 @@ def main() -> None:
     output_path = output_dir / f"{safe_name}.json"
 
     payload = {
-        "stage": "broad_group_concept",
+        "stage": "relationship_concept",
         "human_group": args.group,
         "teaching_task_ids": positive_ids,
         "concept": asdict(concept),
@@ -123,9 +117,9 @@ def main() -> None:
             task_id: score_against_concept(features, concept)
             for task_id, features in all_rows.items()
         },
+        "teaching_features": positive_rows,
         "next_stage": (
-            "refine the broad concept by comparing each teaching task's "
-            "training input/output transformations"
+            "discover exact transformation families inside the human-created group"
         ),
     }
 
@@ -136,8 +130,8 @@ def main() -> None:
     print(f"Saved learned concept to: {output_path}")
     print()
     print(
-        "Stage 1 teaches HOW Eric sorted the tasks. "
-        "It does not yet teach the exact repair rule."
+        "Stage 2 adds input/output relationship features: solid regions, "
+        "output-size matches, removed colors, crops, and transformed crops."
     )
 
 
