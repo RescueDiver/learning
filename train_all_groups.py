@@ -63,8 +63,13 @@ def main() -> None:
     print("=" * 72)
     print("FULL TASK-GROUP ROUTER EXPERIMENT")
     print("=" * 72)
-    print(f"Human groups learned: {len(concepts)}")
+    print(f"Learnable human groups: {len(concepts)}")
+    print('"nothing" treated as UNKNOWN, not a learned rule family')
     print(f"Tasks LOO-evaluated: {evaluation['evaluated_tasks']}")
+    print(
+        "Human-unclassified ('nothing') tasks: "
+        f"{evaluation['human_unclassified_tasks']}"
+    )
     print(
         "Singleton tasks not LOO-evaluated: "
         f"{evaluation['singleton_tasks_not_loo_evaluated']}"
@@ -87,6 +92,17 @@ def main() -> None:
     print()
 
     for result in evaluation["results"]:
+        if result["status"] == "human_unclassified":
+            guesses = " | ".join(
+                f"{item['group']} {item['score']:.3f}"
+                for item in result["predictions"]
+            )
+            print(
+                f"{result['task_id']} | UNKNOWN | {guesses} "
+                "| diagnostic only"
+            )
+            continue
+
         if result["status"] != "evaluated":
             print(
                 f"{result['task_id']} | {result['expected_group']} "
@@ -114,6 +130,7 @@ def main() -> None:
     print(f"Saved evaluation to: {eval_path}")
     print()
     print(
+        ""nothing" is now an UNKNOWN/fallback state, not a rule family. "
         "This is a ROUTER, not a final solver. Later, a task can use the "
         "top-ranked group as the first rule toolbox, try the next group if "
         "exact reconstruction fails, and only then fall back to wider search."
