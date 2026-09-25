@@ -108,36 +108,6 @@ def learn_periodic_motif_program(
         added_sets.append(output_colors - input_colors)
 
     common_added = set.intersection(*added_sets) if added_sets else set()
-    if len(common_added) != 1:
-        return StructuralLearningResult(
-            None,
-            False,
-            (),
-            ("could not identify one common output overlay color",),
-        )
-    overlay_color = next(iter(common_added))
-
-    overlay_bboxes = [
-        color_bbox(pair["output"], overlay_color)
-        for pair in pairs
-    ]
-    if any(bbox is None for bbox in overlay_bboxes):
-        return StructuralLearningResult(
-            None,
-            False,
-            (),
-            ("overlay color missing from a training output",),
-        )
-
-    unique_bboxes = {bbox for bbox in overlay_bboxes if bbox is not None}
-    if len(unique_bboxes) != 1:
-        return StructuralLearningResult(
-            None,
-            False,
-            (),
-            ("overlay region is not structurally stable",),
-        )
-    overlay_bbox = next(iter(unique_bboxes))
 
     motifs = [minority_motif(pair["input"]) for pair in pairs]
     if any(motif is None for motif in motifs):
@@ -147,6 +117,24 @@ def learn_periodic_motif_program(
             (),
             ("could not isolate an input motif",),
         )
+
+    overlay_choice = _choose_overlay_color(
+        pairs=pairs,
+        motifs=motifs,
+        candidate_colors=common_added,
+    )
+    if overlay_choice is None:
+        return StructuralLearningResult(
+            None,
+            False,
+            (),
+            (
+                "could not identify an added color whose stable region "
+                "matches a repeated input motif",
+            ),
+        )
+
+    overlay_color, overlay_bbox, overlay_repeat = overlay_choice
 
     repeat_factors: set[tuple[int, int]] = set()
     motif_to_tile: dict[str, Tile] = {}
@@ -180,6 +168,14 @@ def learn_periodic_motif_program(
 
         row_repeat = overlay_h // motif_h
         col_repeat = overlay_w // motif_w
+
+        if (row_repeat, col_repeat) != overlay_repeat:
+            return StructuralLearningResult(
+                None,
+                False,
+                tuple(evidence),
+                ("motif repeat factor changed after overlay selection",),
+            )
         repeated = tile_mask(motif.mask, row_repeat, col_repeat)
         observed_overlay = color_mask_in_bbox(
             pair["output"],
@@ -253,7 +249,7 @@ def learn_periodic_motif_program(
         period=next(iter(periods)),
         overlay_color=overlay_color,
         overlay_bbox=overlay_bbox,
-        overlay_repeat=next(iter(repeat_factors)),
+        overlay_repeat=overlay_repeat,
         motif_to_tile=motif_to_tile,
     )
 
@@ -277,3 +273,99 @@ def learn_periodic_motif_program(
         evidence=tuple(evidence),
         unresolved=tuple(unresolved),
     )
+
+
+
+def _choose_overlay_color(
+    pairs: list[dict[str, Any]],
+    motifs: list[Any],
+    candidate_colors: set[int],
+) -> tuple[int, tuple[int, int, int, int], tuple[int, int]] | None:
+    """
+    Pick the added output color by structural evidence, not by assuming only
+    one new color exists.
+
+    A valid overlay color must:
+      1. have the same bounding box in every training output,
+      2. have a box that is an integer multiple of each input motif,
+      3. reproduce the output color mask exactly when the motif is tiled.
+
+    This distinguishes a true overlay (for eee78d87: color 9) from a new
+    background/template color that also happens to be absent from the input.
+    """
+    choices: list[
+        tuple[int, tuple[int, int, int, int], tuple[int, int]]
+    ] = []
+
+    for color in sorted(candidate_colors):
+        bboxes = [color_bbox(pair["output"], color) for pair in pairs]
+        if any(bbox is None for bbox in bboxes):
+            continue
+
+        unique_bboxes = {bbox for bbox in bboxes if bbox is not None}
+        if len(unique_bboxes) != 1:
+            continue
+
+        bbox = next(iter(unique_bboxes))
+        top, left, bottom, right = bbox
+        overlay_h = bottom - top + 1
+        overlay_w = right - left + 1
+
+        repeat: tuple[int, int] | None = None
+        valid = True
+
+        for pair, motif in zip(pairs, motifs):
+            if motif is None or not motif.mask:
+                valid = False
+                break
+
+            motif_h = len(motif.mask)
+            motif_w = len(motif.mask[0])
+
+            if overlay_h % motif_h or overlay_w % motif_w:
+                valid = False
+                break
+
+            current_repeat = (
+                overlay_h // motif_h,
+                overlay_w // motif_w,
+            )
+
+            if repeat is None:
+                repeat = current_repeat
+            elif repeat != current_repeat:
+                valid = False
+                break
+
+            predicted_mask = tile_mask(
+                motif.mask,
+                current_repeat[0],
+                current_repeat[1],
+            )
+            observed_mask = color_mask_in_bbox(
+                pair["output"],
+                color,
+                bbox,
+            )
+
+            if predicted_mask != observed_mask:
+                valid = False
+                break
+
+        if valid and repeat is not None:
+            choices.append((color, bbox, repeat))
+
+    if not choices:
+        return None
+
+    # Prefer the most spatially specific valid overlay if more than one
+    # survives. This avoids treating a full-grid template/background color
+    # as the semantic overlay.
+    choices.sort(
+        key=lambda item: (
+            (item[1][2] - item[1][0] + 1)
+            * (item[1][3] - item[1][1] + 1),
+            item[0],
+        )
+    )
+    return choices[0]
