@@ -69,6 +69,10 @@ def main() -> None:
     print(f"Overlay bbox: {program.overlay_bbox}")
     print(f"Motif repeat: {program.overlay_repeat}")
     print(f"Learned motif/template associations: {len(program.motif_to_tile)}")
+    print(
+        "Motif->tile relation: "
+        + (program.relation_rule.name if program.relation_rule else "NONE")
+    )
     print()
 
     for item in structural.evidence:
@@ -99,11 +103,15 @@ def main() -> None:
 
         print(f"Test {index} motif: {signature}")
         print(f"Test {index} motif known from training: {known}")
+        print(
+            f"Test {index} relation generalization available: "
+            f"{program.relation_rule is not None}"
+        )
 
         if prediction is None:
             print(
-                f"Test {index}: NO PREDICTION -- relationship for this new "
-                "motif has not been learned yet."
+                f"Test {index}: NO PREDICTION -- no LOO-validated relationship "
+                "can map this unseen motif to a periodic tile."
             )
         else:
             print(f"Test {index}: structural prediction generated")
