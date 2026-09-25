@@ -80,15 +80,31 @@ def main() -> None:
         f"{evaluation['coarse_hit_count']}/{evaluation['evaluated_tasks']} "
         f"({evaluation['coarse_hit_accuracy']:.1%})"
     )
+    print()
+    print("BLEND EXPERIMENTS")
+    for key, experiment in evaluation["experiments"].items():
+        print(
+            f"coarse {experiment['coarse_weight']:.0%} / "
+            f"specialist {experiment['specialist_weight']:.0%} -> "
+            f"Top-1 {experiment['top1_correct']}/{evaluation['evaluated_tasks']} "
+            f"({experiment['top1_accuracy']:.1%}) | "
+            f"Top-3 {experiment['top3_correct']}/{evaluation['evaluated_tasks']} "
+            f"({experiment['top3_accuracy']:.1%})"
+        )
+
+    best = evaluation["best"]
+    print()
     print(
-        f"Top-1 human-group match after specialist rerank: "
-        f"{evaluation['top1_correct']}/{evaluation['evaluated_tasks']} "
-        f"({evaluation['top1_accuracy']:.1%})"
+        f"BEST BLEND: coarse {best['coarse_weight']:.0%} / "
+        f"specialist {best['specialist_weight']:.0%}"
     )
     print(
-        f"Top-3 human-group match after specialist rerank: "
-        f"{evaluation['top3_correct']}/{evaluation['evaluated_tasks']} "
-        f"({evaluation['top3_accuracy']:.1%})"
+        f"Top-1: {best['top1_correct']}/{evaluation['evaluated_tasks']} "
+        f"({best['top1_accuracy']:.1%})"
+    )
+    print(
+        f"Top-3: {best['top3_correct']}/{evaluation['evaluated_tasks']} "
+        f"({best['top3_accuracy']:.1%})"
     )
 
     print()
@@ -96,7 +112,7 @@ def main() -> None:
     print("Expected group -> learner's top 3 guesses after structural specialist questions")
     print()
 
-    for result in evaluation["results"]:
+    for result in evaluation["best"]["results"]:
         if result["status"] == "human_unclassified":
             guesses = " | ".join(
                 f"{item['group']} {item['score']:.3f}"
@@ -136,11 +152,10 @@ def main() -> None:
     print()
     print(
         "\"nothing\" is now an UNKNOWN/fallback state, not a rule family. "
-        "Routing now happens in two stages: generic features narrow the "
-        "neighborhood, then each candidate group uses its own learned "
-        "structural vocabulary to rerank the candidates. Raw dimensions, "
-        "areas, color counts, and train-pair count are blocked from becoming "
-        "specialist-defining questions. This is still a router, not a final solver."
+        "Routing now keeps the full specialist vocabulary and tests multiple "
+        "coarse/specialist blends. The best blend is chosen by Top-3 accuracy, "
+        "with Top-1 used as the tie-breaker. This is the final learning-repo "
+        "routing experiment before integration into ARCS6."
     )
 
 
