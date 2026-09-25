@@ -130,7 +130,7 @@ def main() -> None:
     print(f"Saved evaluation to: {eval_path}")
     print()
     print(
-        ""nothing" is now an UNKNOWN/fallback state, not a rule family. "
+        "\"nothing\" is now an UNKNOWN/fallback state, not a rule family. "
         "This is a ROUTER, not a final solver. Later, a task can use the "
         "top-ranked group as the first rule toolbox, try the next group if "
         "exact reconstruction fails, and only then fall back to wider search."
