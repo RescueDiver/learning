@@ -354,3 +354,20 @@ def extract_task_rule_features(task: dict[str, Any]) -> TaskFeatures:
     values["train_pair_count"] = float(len(pairs))
 
     return TaskFeatures(values=values)
+
+
+
+def extract_task_router_features(task: dict[str, Any]) -> TaskFeatures:
+    """
+    Rich router vocabulary.
+
+    The coarse router uses rule invariants. Specialist group scorers use this
+    larger vocabulary so each human group can learn its own most useful
+    questions from both task appearance and input/output relationships.
+    """
+    broad = extract_task_features(task).values
+    rules = extract_task_rule_features(task).values
+
+    values = dict(broad)
+    values.update(rules)
+    return TaskFeatures(values=values)
