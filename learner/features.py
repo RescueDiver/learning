@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Any
 
 Grid = list[list[int]]
+Coord = tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ def _largest_solid_rectangle_ratio(grid: Grid) -> float:
     if not grid or not grid[0]:
         return 0.0
 
-    positions: dict[int, list[tuple[int, int]]] = {}
+    positions: dict[int, list[Coord]] = {}
     for r, row in enumerate(grid):
         for c, value in enumerate(row):
             positions.setdefault(value, []).append((r, c))
@@ -42,6 +43,217 @@ def _largest_solid_rectangle_ratio(grid: Grid) -> float:
             best = max(best, len(cells) / area)
 
     return best
+
+
+def _components_by_color(grid: Grid) -> list[dict[str, Any]]:
+    if not grid or not grid[0]:
+        return []
+
+    height = len(grid)
+    width = len(grid[0])
+    seen: set[Coord] = set()
+    components: list[dict[str, Any]] = []
+
+    for r in range(height):
+        for c in range(width):
+            if (r, c) in seen:
+                continue
+
+            color = grid[r][c]
+            queue = deque([(r, c)])
+            seen.add((r, c))
+            cells: list[Coord] = []
+
+            while queue:
+                cr, cc = queue.popleft()
+                cells.append((cr, cc))
+
+                for nr, nc in (
+                    (cr - 1, cc),
+                    (cr + 1, cc),
+                    (cr, cc - 1),
+                    (cr, cc + 1),
+                ):
+                    if not (0 <= nr < height and 0 <= nc < width):
+                        continue
+                    if (nr, nc) in seen:
+                        continue
+                    if grid[nr][nc] != color:
+                        continue
+                    seen.add((nr, nc))
+                    queue.append((nr, nc))
+
+            top = min(rr for rr, _ in cells)
+            bottom = max(rr for rr, _ in cells)
+            left = min(cc for _, cc in cells)
+            right = max(cc for _, cc in cells)
+            box_height = bottom - top + 1
+            box_width = right - left + 1
+            box_area = box_height * box_width
+            solid = len(cells) == box_area
+
+            components.append(
+                {
+                    "color": color,
+                    "cells": cells,
+                    "cell_count": len(cells),
+                    "top": top,
+                    "bottom": bottom,
+                    "left": left,
+                    "right": right,
+                    "height": box_height,
+                    "width": box_width,
+                    "area": box_area,
+                    "solid": solid,
+                }
+            )
+
+    return components
+
+
+def _crop(grid: Grid, top: int, left: int, height: int, width: int) -> Grid:
+    return [
+        row[left:left + width]
+        for row in grid[top:top + height]
+    ]
+
+
+def _rotate_90(grid: Grid) -> Grid:
+    if not grid:
+        return []
+    return [list(row) for row in zip(*grid[::-1])]
+
+
+def _rotate_180(grid: Grid) -> Grid:
+    return [row[::-1] for row in grid[::-1]]
+
+
+def _rotate_270(grid: Grid) -> Grid:
+    if not grid:
+        return []
+    return [list(row) for row in zip(*grid)][::-1]
+
+
+def _mirror_horizontal(grid: Grid) -> Grid:
+    return grid[::-1]
+
+
+def _mirror_vertical(grid: Grid) -> Grid:
+    return [row[::-1] for row in grid]
+
+
+def _output_equals_any_crop(input_grid: Grid, output_grid: Grid) -> bool:
+    ih, iw = _shape(input_grid)
+    oh, ow = _shape(output_grid)
+
+    if oh == 0 or ow == 0 or oh > ih or ow > iw:
+        return False
+
+    for top in range(ih - oh + 1):
+        for left in range(iw - ow + 1):
+            if _crop(input_grid, top, left, oh, ow) == output_grid:
+                return True
+
+    return False
+
+
+def _output_equals_transformed_crop(input_grid: Grid, output_grid: Grid) -> bool:
+    ih, iw = _shape(input_grid)
+    oh, ow = _shape(output_grid)
+
+    candidate_shapes = {(oh, ow), (ow, oh)}
+
+    for height, width in candidate_shapes:
+        if height <= 0 or width <= 0 or height > ih or width > iw:
+            continue
+
+        for top in range(ih - height + 1):
+            for left in range(iw - width + 1):
+                crop = _crop(input_grid, top, left, height, width)
+                transforms = (
+                    _rotate_90(crop),
+                    _rotate_180(crop),
+                    _rotate_270(crop),
+                    _mirror_horizontal(crop),
+                    _mirror_vertical(crop),
+                )
+                if any(candidate == output_grid for candidate in transforms):
+                    return True
+
+    return False
+
+
+def _relation_features(input_grid: Grid, output_grid: Grid) -> dict[str, float]:
+    output_height, output_width = _shape(output_grid)
+    output_colors = set(_color_counts(output_grid))
+
+    components = _components_by_color(input_grid)
+    solid_components = [
+        component
+        for component in components
+        if component["solid"] and component["cell_count"] >= 4
+    ]
+
+    matching_size = [
+        component
+        for component in solid_components
+        if (
+            component["height"] == output_height
+            and component["width"] == output_width
+        )
+    ]
+
+    matching_rotated_size = [
+        component
+        for component in solid_components
+        if (
+            component["height"] == output_width
+            and component["width"] == output_height
+        )
+    ]
+
+    matching_removed = [
+        component
+        for component in matching_size
+        if component["color"] not in output_colors
+    ]
+
+    rotated_matching_removed = [
+        component
+        for component in matching_rotated_size
+        if component["color"] not in output_colors
+    ]
+
+    largest_solid_area = max(
+        (component["area"] for component in solid_components),
+        default=0,
+    )
+
+    output_area = output_height * output_width
+
+    return {
+        "has_solid_component": float(bool(solid_components)),
+        "solid_component_count": float(len(solid_components)),
+        "output_matches_solid_component_size": float(bool(matching_size)),
+        "output_matches_rotated_solid_component_size": float(
+            bool(matching_rotated_size)
+        ),
+        "matching_solid_color_removed": float(bool(matching_removed)),
+        "rotated_matching_solid_color_removed": float(
+            bool(rotated_matching_removed)
+        ),
+        "largest_solid_component_area_ratio_to_output": (
+            float(largest_solid_area) / output_area
+            if output_area
+            else 0.0
+        ),
+        "output_equals_input_crop": float(
+            _output_equals_any_crop(input_grid, output_grid)
+        ),
+        "output_equals_transformed_input_crop": float(
+            _output_equals_transformed_crop(input_grid, output_grid)
+        ),
+    }
 
 
 def _pair_features(pair: dict[str, Any]) -> dict[str, float]:
@@ -60,7 +272,7 @@ def _pair_features(pair: dict[str, Any]) -> dict[str, float]:
     input_area = ih * iw
     output_area = oh * ow
 
-    return {
+    features = {
         "same_shape": float((ih, iw) == (oh, ow)),
         "input_height": float(ih),
         "input_width": float(iw),
@@ -75,6 +287,9 @@ def _pair_features(pair: dict[str, Any]) -> dict[str, float]:
         "colors_added": float(len(output_colors - input_colors)),
         "largest_solid_rectangle_ratio": _largest_solid_rectangle_ratio(input_grid),
     }
+
+    features.update(_relation_features(input_grid, output_grid))
+    return features
 
 
 def extract_task_features(task: dict[str, Any]) -> TaskFeatures:
