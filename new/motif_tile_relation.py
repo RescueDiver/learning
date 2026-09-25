@@ -312,19 +312,14 @@ def _base_masks(motif: Motif) -> dict[str, Mask]:
             ),
         )
 
-    # Remove duplicate base masks by behavior, keeping the lexically first
-    # name so relation search stays deterministic.
-    deduped: dict[str, Mask] = {}
-    seen: set[Mask] = set()
-
-    for name in sorted(bases):
-        value = bases[name]
-        if value in seen:
-            continue
-        seen.add(value)
-        deduped[name] = value
-
-    return deduped
+    # Keep the vocabulary names stable across every example.
+    #
+    # Do NOT deduplicate names by their current mask value here. Two different
+    # structural words can happen to produce the same mask for one motif but
+    # different masks for another motif. Removing one name on a per-example
+    # basis made a rule learned from pair 1 disappear when it was evaluated
+    # on pair 2/3.
+    return bases
 
 
 def _combine(a: Mask, b: Mask, op: str) -> Mask:
