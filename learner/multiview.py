@@ -11,6 +11,16 @@ class ViewResult:
     selected_features: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ComparedIdea:
+    feature: str
+    selected_in_passes: int
+    total_passes: int
+    teaching_tasks_supported: int
+    total_teaching_tasks: int
+    decision: str
+
+
 VIEW_ORDERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "geometry_first",
@@ -41,22 +51,13 @@ def _category(feature: str) -> str:
     ):
         return "geometry"
 
-    if (
-        "color_removed" in name
-        or "some_color_removed" in name
-    ):
+    if "color_removed" in name or "some_color_removed" in name:
         return "change"
 
-    if (
-        "output_smaller" in name
-        or "output_matches" in name
-    ):
+    if "output_smaller" in name or "output_matches" in name:
         return "output"
 
-    if (
-        "crop" in name
-        or "transformed" in name
-    ):
+    if "crop" in name or "transformed" in name:
         return "reconstruction"
 
     return "other"
@@ -105,8 +106,6 @@ def _candidate_features(
         if key.startswith("all_")
     }
 
-    # Stage 5 is trying to find ideas characteristic of Eric's group.
-    # Negative contrasts are useful later, but they are not "surviving ideas".
     return [
         key
         for key in keys
@@ -114,62 +113,97 @@ def _candidate_features(
     ]
 
 
-def run_multiview_passes(
+def run_single_view(
+    view_name: str,
     positives: list[dict[str, float]],
     negatives: list[dict[str, float]],
     features_per_pass: int = 5,
-) -> tuple[ViewResult, ...]:
+) -> ViewResult:
+    view_lookup = dict(VIEW_ORDERS)
+
+    if view_name not in view_lookup:
+        raise ValueError(f"Unknown view: {view_name}")
+
+    category_order = view_lookup[view_name]
+    category_rank = {
+        category: index
+        for index, category in enumerate(category_order)
+    }
+
     candidates = _candidate_features(positives, negatives)
     discrimination = {
         key: _discrimination(key, positives, negatives)
         for key in candidates
     }
 
-    results: list[ViewResult] = []
+    ordered = sorted(
+        candidates,
+        key=lambda key: (
+            category_rank.get(_category(key), len(category_order)),
+            -discrimination[key],
+            key,
+        ),
+    )
 
-    for view_name, category_order in VIEW_ORDERS:
-        category_rank = {
-            category: index
-            for index, category in enumerate(category_order)
-        }
-
-        ordered = sorted(
-            candidates,
-            key=lambda key: (
-                category_rank.get(_category(key), len(category_order)),
-                -discrimination[key],
-                key,
-            ),
-        )
-
-        selected = tuple(ordered[:features_per_pass])
-
-        results.append(
-            ViewResult(
-                name=view_name,
-                ordered_categories=category_order,
-                selected_features=selected,
-            )
-        )
-
-    return tuple(results)
+    return ViewResult(
+        name=view_name,
+        ordered_categories=category_order,
+        selected_features=tuple(ordered[:features_per_pass]),
+    )
 
 
-def surviving_ideas(
+def compare_view_results(
     passes: tuple[ViewResult, ...],
-    minimum_passes: int = 3,
-) -> tuple[tuple[str, int], ...]:
-    counts: dict[str, int] = {}
+    teaching_rows: dict[str, dict[str, float]],
+) -> tuple[ComparedIdea, ...]:
+    pass_counts: dict[str, int] = {}
 
     for result in passes:
         for feature in result.selected_features:
-            counts[feature] = counts.get(feature, 0) + 1
+            pass_counts[feature] = pass_counts.get(feature, 0) + 1
 
-    survivors = [
-        (feature, count)
-        for feature, count in counts.items()
-        if count >= minimum_passes
-    ]
+    ideas: list[ComparedIdea] = []
+    total_passes = len(passes)
+    total_tasks = len(teaching_rows)
 
-    survivors.sort(key=lambda item: (-item[1], item[0]))
-    return tuple(survivors)
+    for feature, pass_count in pass_counts.items():
+        task_support = sum(
+            1
+            for features in teaching_rows.values()
+            if features.get(feature, 0.0) >= 0.5
+        )
+
+        if pass_count >= 3 and task_support == total_tasks:
+            decision = "KEEP_PARENT"
+        elif pass_count >= 3 and task_support > 0:
+            decision = "KEEP_SUBTYPE"
+        else:
+            decision = "WEAK"
+
+        ideas.append(
+            ComparedIdea(
+                feature=feature,
+                selected_in_passes=pass_count,
+                total_passes=total_passes,
+                teaching_tasks_supported=task_support,
+                total_teaching_tasks=total_tasks,
+                decision=decision,
+            )
+        )
+
+    decision_rank = {
+        "KEEP_PARENT": 0,
+        "KEEP_SUBTYPE": 1,
+        "WEAK": 2,
+    }
+
+    ideas.sort(
+        key=lambda idea: (
+            decision_rank[idea.decision],
+            -idea.selected_in_passes,
+            -idea.teaching_tasks_supported,
+            idea.feature,
+        )
+    )
+
+    return tuple(ideas)
