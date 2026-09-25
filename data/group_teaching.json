@@ -1,0 +1,24 @@
+{
+  "missing mask": {
+    "human_intent": "These tasks are grouped because Eric expects them to be solved by recovering information hidden or missing behind a mask, not because they share one exact geometry or one exact operation.",
+    "parent_idea": "A visible region is blocking or replacing information, and the solution must recover what should be there.",
+    "subfamilies": [
+      {
+        "name": "large_multicolor_missing_region",
+        "description": "Large multicolored arrays where part of the array is missing or covered and must be reconstructed from the surrounding pattern.",
+        "task_ids": [
+          "0934a4d8",
+          "a6f40cea"
+        ]
+      },
+      {
+        "name": "covered_middle_of_shapes",
+        "description": "Two or three shapes appear inside the array and something covers the middle; the hidden middle must be recovered from the visible shapes.",
+        "task_ids": [
+          "981571dc"
+        ]
+      }
+    ],
+    "learning_rule": "Do not require every task in the parent group to share the same low-level geometry. Learn what the close subfamily members share, what differs in the other subfamily, and then search for the higher-level concept that connects the subfamilies."
+  }
+}
