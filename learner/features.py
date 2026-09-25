@@ -13,6 +13,17 @@ class TaskFeatures:
     values: dict[str, float]
 
 
+RELATION_KEYS = (
+    "has_solid_component",
+    "output_matches_solid_component_size",
+    "output_matches_rotated_solid_component_size",
+    "matching_solid_color_removed",
+    "rotated_matching_solid_color_removed",
+    "output_equals_input_crop",
+    "output_equals_transformed_input_crop",
+)
+
+
 def _shape(grid: Grid) -> tuple[int, int]:
     if not grid:
         return 0, 0
@@ -90,7 +101,6 @@ def _components_by_color(grid: Grid) -> list[dict[str, Any]]:
             box_height = bottom - top + 1
             box_width = right - left + 1
             box_area = box_height * box_width
-            solid = len(cells) == box_area
 
             components.append(
                 {
@@ -104,7 +114,7 @@ def _components_by_color(grid: Grid) -> list[dict[str, Any]]:
                     "height": box_height,
                     "width": box_width,
                     "area": box_area,
-                    "solid": solid,
+                    "solid": len(cells) == box_area,
                 }
             )
 
@@ -112,10 +122,7 @@ def _components_by_color(grid: Grid) -> list[dict[str, Any]]:
 
 
 def _crop(grid: Grid, top: int, left: int, height: int, width: int) -> Grid:
-    return [
-        row[left:left + width]
-        for row in grid[top:top + height]
-    ]
+    return [row[left:left + width] for row in grid[top:top + height]]
 
 
 def _rotate_90(grid: Grid) -> Grid:
@@ -161,9 +168,7 @@ def _output_equals_transformed_crop(input_grid: Grid, output_grid: Grid) -> bool
     ih, iw = _shape(input_grid)
     oh, ow = _shape(output_grid)
 
-    candidate_shapes = {(oh, ow), (ow, oh)}
-
-    for height, width in candidate_shapes:
+    for height, width in {(oh, ow), (ow, oh)}:
         if height <= 0 or width <= 0 or height > ih or width > iw:
             continue
 
@@ -228,7 +233,6 @@ def _relation_features(input_grid: Grid, output_grid: Grid) -> dict[str, float]:
         (component["area"] for component in solid_components),
         default=0,
     )
-
     output_area = output_height * output_width
 
     return {
@@ -243,9 +247,7 @@ def _relation_features(input_grid: Grid, output_grid: Grid) -> dict[str, float]:
             bool(rotated_matching_removed)
         ),
         "largest_solid_component_area_ratio_to_output": (
-            float(largest_solid_area) / output_area
-            if output_area
-            else 0.0
+            float(largest_solid_area) / output_area if output_area else 0.0
         ),
         "output_equals_input_crop": float(
             _output_equals_any_crop(input_grid, output_grid)
@@ -256,7 +258,7 @@ def _relation_features(input_grid: Grid, output_grid: Grid) -> dict[str, float]:
     }
 
 
-def _pair_features(pair: dict[str, Any]) -> dict[str, float]:
+def extract_pair_features(pair: dict[str, Any]) -> dict[str, float]:
     input_grid: Grid = pair["input"]
     output_grid: Grid = pair["output"]
 
@@ -297,7 +299,7 @@ def extract_task_features(task: dict[str, Any]) -> TaskFeatures:
     if not pairs:
         return TaskFeatures(values={})
 
-    per_pair = [_pair_features(pair) for pair in pairs]
+    per_pair = [extract_pair_features(pair) for pair in pairs]
     keys = sorted(per_pair[0])
 
     values: dict[str, float] = {}
@@ -307,4 +309,48 @@ def extract_task_features(task: dict[str, Any]) -> TaskFeatures:
         values[f"range_{key}"] = max(series) - min(series)
 
     values["train_pair_count"] = float(len(pairs))
+    return TaskFeatures(values=values)
+
+
+def extract_task_rule_features(task: dict[str, Any]) -> TaskFeatures:
+    """
+    Stage 3 representation.
+
+    Instead of averaging a task into one blob, preserve whether the SAME
+    relationship holds across every training pair. These are candidate
+    "rules" or invariants, not mere visual statistics.
+    """
+    pairs = task.get("train", [])
+    if not pairs:
+        return TaskFeatures(values={})
+
+    per_pair = [extract_pair_features(pair) for pair in pairs]
+    values: dict[str, float] = {}
+
+    for key in RELATION_KEYS:
+        series = [pair_features[key] for pair_features in per_pair]
+        values[f"all_{key}"] = float(all(value >= 0.5 for value in series))
+        values[f"any_{key}"] = float(any(value >= 0.5 for value in series))
+        values[f"fraction_{key}"] = sum(series) / len(series)
+        values[f"consistent_{key}"] = float(
+            max(series) - min(series) < 1e-9
+        )
+
+    # A few structural invariants that matter across pairs without caring
+    # about the literal dimensions or colors.
+    same_shape_series = [pair_features["same_shape"] for pair_features in per_pair]
+    shrink_series = [
+        float(pair_features["area_ratio"] < 1.0)
+        for pair_features in per_pair
+    ]
+    color_removed_series = [
+        float(pair_features["colors_removed"] > 0.0)
+        for pair_features in per_pair
+    ]
+
+    values["all_same_shape"] = float(all(same_shape_series))
+    values["all_output_smaller"] = float(all(shrink_series))
+    values["all_some_color_removed"] = float(all(color_removed_series))
+    values["train_pair_count"] = float(len(pairs))
+
     return TaskFeatures(values=values)
