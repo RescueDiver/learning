@@ -93,7 +93,7 @@ def main() -> None:
 
     print()
     print("TASK ROUTING RESULTS")
-    print("Expected group -> learner's top 3 guesses after group-specific questions")
+    print("Expected group -> learner's top 3 guesses after structural specialist questions")
     print()
 
     for result in evaluation["results"]:
@@ -138,8 +138,9 @@ def main() -> None:
         "\"nothing\" is now an UNKNOWN/fallback state, not a rule family. "
         "Routing now happens in two stages: generic features narrow the "
         "neighborhood, then each candidate group uses its own learned "
-        "feature vocabulary to rerank the candidates. This is still a "
-        "router, not a final solver."
+        "structural vocabulary to rerank the candidates. Raw dimensions, "
+        "areas, color counts, and train-pair count are blocked from becoming "
+        "specialist-defining questions. This is still a router, not a final solver."
     )
 
 
