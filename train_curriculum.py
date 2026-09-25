@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from learner.features import extract_task_rule_features
+from learner.multiview import run_multiview_passes, surviving_ideas
 from learner.refinement import (
     best_subconcept_match,
     discover_subconcepts,
@@ -20,7 +21,10 @@ def load_json(path: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Teach a broad ARC group, then refine it into sub-concepts."
+        description=(
+            "Teach an ARC group from several ordered viewpoints and keep "
+            "the ideas that survive the different passes."
+        )
     )
     parser.add_argument(
         "--group",
@@ -46,7 +50,11 @@ def main() -> None:
             f"Group {args.group!r} not found. Available groups: {available}"
         )
 
-    positive_ids = [task_id for task_id in groups[args.group] if task_id in data]
+    positive_ids = [
+        task_id
+        for task_id in groups[args.group]
+        if task_id in data
+    ]
     other_ids = sorted({
         task_id
         for group_name, task_ids in groups.items()
@@ -70,15 +78,46 @@ def main() -> None:
     parent_features = shared_parent_features(positive_rows)
     subconcepts = discover_subconcepts(positive_rows)
 
+    passes = run_multiview_passes(
+        positives=list(positive_rows.values()),
+        negatives=list(negative_rows.values()),
+        features_per_pass=5,
+    )
+    survivors = surviving_ideas(
+        passes,
+        minimum_passes=3,
+    )
+
     print("=" * 72)
-    print("CURRICULUM LEARNING EXPERIMENT - STAGE 4")
+    print("CURRICULUM LEARNING EXPERIMENT - STAGE 5")
     print("=" * 72)
     print(f"Human group: {args.group}")
     print(f"Teaching tasks: {len(positive_rows)}")
     print(f"Contrast tasks: {len(negative_rows)}")
     print()
 
-    print("Shared parent concept:")
+    print("Same lesson, different viewing orders:")
+    for result in passes:
+        print()
+        print(
+            f"  {result.name}: "
+            f"{' -> '.join(result.ordered_categories)}"
+        )
+        for feature in result.selected_features:
+            print(f"    {feature}")
+
+    print()
+    print("Ideas that survived different viewing orders:")
+    if survivors:
+        for feature, count in survivors:
+            print(
+                f"  {feature:58s} survived {count}/{len(passes)} passes"
+            )
+    else:
+        print("  none survived the current threshold")
+
+    print()
+    print("Shared parent concept from ALL teaching tasks:")
     if parent_features:
         for feature in parent_features:
             print(f"  {feature}")
@@ -86,22 +125,20 @@ def main() -> None:
         print("  (no all-pair invariant shared by every teaching task)")
 
     print()
-    print("Learned sub-concepts:")
+    print("Stage 4 sub-concepts, kept for comparison:")
     for concept in subconcepts:
-        print(f"  {concept.concept_id}")
-        print(f"    teaching tasks: {', '.join(concept.task_ids)}")
-
-        if concept.distinguishing_features:
-            print("    distinguishing rules:")
-            for feature in concept.distinguishing_features:
-                print(f"      {feature}")
-        else:
-            print("    distinguishing rules: parent concept only")
+        print(
+            f"  {concept.concept_id}: "
+            f"{', '.join(concept.task_ids)}"
+        )
 
     print()
     print("Teaching-task matches:")
     for task_id, features in positive_rows.items():
-        concept_id, score = best_subconcept_match(features, subconcepts)
+        concept_id, score = best_subconcept_match(
+            features,
+            subconcepts,
+        )
         print(f"  {task_id} -> {concept_id}  score={score:.4f}")
 
     print()
@@ -109,7 +146,10 @@ def main() -> None:
     outside_matches = []
 
     for task_id, features in negative_rows.items():
-        concept_id, score = best_subconcept_match(features, subconcepts)
+        concept_id, score = best_subconcept_match(
+            features,
+            subconcepts,
+        )
         outside_matches.append((score, task_id, concept_id))
 
     outside_matches.sort(reverse=True)
@@ -124,9 +164,18 @@ def main() -> None:
     output_path = output_dir / f"{safe_name}.json"
 
     payload = {
-        "stage": "subconcept_refinement",
+        "stage": "multi_view_survival",
         "human_group": args.group,
         "teaching_task_ids": positive_ids,
+        "view_passes": [asdict(result) for result in passes],
+        "surviving_ideas": [
+            {
+                "feature": feature,
+                "survived_passes": count,
+                "total_passes": len(passes),
+            }
+            for feature, count in survivors
+        ],
         "parent_required_features": list(parent_features),
         "subconcepts": [asdict(concept) for concept in subconcepts],
         "teaching_rule_features": positive_rows,
@@ -139,8 +188,8 @@ def main() -> None:
             for score, task_id, concept_id in outside_matches
         ],
         "next_stage": (
-            "for each learned subtype, search for the exact reconstruction "
-            "operation that reproduces every training output"
+            "add finer changed-cell and reconstruction features, then rerun "
+            "the same multi-view survival test"
         ),
     }
 
@@ -148,12 +197,12 @@ def main() -> None:
         json.dump(payload, file, indent=2)
 
     print()
-    print(f"Saved refined concept to: {output_path}")
+    print(f"Saved multi-view concept to: {output_path}")
     print()
     print(
-        "Stage 4 keeps Eric's broad group as the parent lesson, then lets "
-        "the learner invent narrower internal sub-concepts from the rules "
-        "that differ inside that group."
+        "Stage 5 changes the order of attention without changing the "
+        "teaching tasks. Ideas that recur across different orders are "
+        "treated as more trustworthy than one-pass clues."
     )
 
 
