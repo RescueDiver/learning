@@ -15,6 +15,38 @@ from learner.model import learn_group_concept, score_against_concept
 # than learning it as a competing concept.
 UNCLASSIFIED_GROUPS = {"nothing"}
 
+# Surface bookkeeping can accidentally become highly discriminative on a
+# small curriculum even though it says little about HOW a task is solved.
+# Specialists are therefore prevented from choosing these as their defining
+# questions. The raw features still exist for diagnostics.
+SPECIALIST_EXCLUDED_FEATURES = {
+    "train_pair_count",
+    "mean_input_height",
+    "mean_input_width",
+    "mean_input_area",
+    "mean_output_height",
+    "mean_output_width",
+    "mean_output_area",
+    "range_input_height",
+    "range_input_width",
+    "range_input_area",
+    "range_output_height",
+    "range_output_width",
+    "range_output_area",
+    "mean_input_color_count",
+    "mean_output_color_count",
+    "range_input_color_count",
+    "range_output_color_count",
+}
+
+
+def _specialist_filter(features: dict[str, float]) -> dict[str, float]:
+    return {
+        key: value
+        for key, value in features.items()
+        if key not in SPECIALIST_EXCLUDED_FEATURES
+    }
+
 
 def _learnable_groups(
     groups: dict[str, list[str]],
@@ -35,7 +67,9 @@ def _feature_rows(data: dict[str, Any]) -> tuple[
         for task_id, task in data.items()
     }
     specialist_rows = {
-        task_id: extract_task_router_features(task).values
+        task_id: _specialist_filter(
+            extract_task_router_features(task).values
+        )
         for task_id, task in data.items()
     }
     return coarse_rows, specialist_rows
@@ -92,8 +126,9 @@ def build_group_concepts(
         small rule-level vocabulary used only to narrow the neighborhood.
 
     specialist:
-        richer vocabulary. Each group learns its own strongest questions
-        from all available generic measurements and relationships.
+        richer structural vocabulary. Each group learns its own strongest
+        questions, but raw size/count bookkeeping is excluded so specialists
+        are pushed toward transformation and relationship clues.
     """
     coarse_rows, specialist_rows = _feature_rows(data)
 
@@ -138,7 +173,9 @@ def rank_groups_for_task(
       2. candidate groups use their own learned specialist vocabularies.
     """
     coarse_features = extract_task_rule_features(task).values
-    specialist_features = extract_task_router_features(task).values
+    specialist_features = _specialist_filter(
+        extract_task_router_features(task).values
+    )
 
     coarse_ranked = _rank(
         coarse_features,
