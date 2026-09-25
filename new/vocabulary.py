@@ -51,6 +51,36 @@ ARC_DSL_WORD_NAMES = (
 
 # Object/graph vocabulary used by ARGA. These names express the part Eric
 # described as "show this is how this moves and how it fits here".
+RELATION_WORD_NAMES = (
+    "same_shape",
+    "same_size",
+    "same_color",
+    "left_of",
+    "right_of",
+    "above",
+    "below",
+    "inside",
+    "contains",
+    "touching",
+    "adjacent_to",
+    "top_aligned",
+    "bottom_aligned",
+    "left_aligned",
+    "right_aligned",
+    "same_relative_position",
+    "matches_after_rotation",
+    "matches_after_reflection",
+    "repeated_motif",
+    "periodic_template",
+    "overlay",
+    "occludes",
+    "continuation_of",
+    "bind_offset_from_object",
+    "bind_scale_from_object",
+    "bind_color_from_object",
+)
+
+
 ARGA_WORD_NAMES = (
     "filter_by_color",
     "filter_by_size",
@@ -141,6 +171,17 @@ def build_vocabulary() -> tuple[Word, ...]:
                 source="ARGA",
                 executable=name in EXECUTABLE_CORE,
                 description=f"ARGA object/graph operation: {name}",
+            )
+        )
+
+    for name in RELATION_WORD_NAMES:
+        words.append(
+            Word(
+                name=name,
+                family="relation",
+                source="NEW structural layer",
+                executable=False,
+                description=f"Structural relationship: {name}",
             )
         )
 
