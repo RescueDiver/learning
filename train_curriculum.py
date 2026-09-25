@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from learner.features import extract_task_features
+from learner.features import extract_task_rule_features
 from learner.model import learn_group_concept, score_against_concept
 
 
@@ -55,11 +55,11 @@ def main() -> None:
         raise SystemExit("Selected group has no usable tasks.")
 
     positive_rows = {
-        task_id: extract_task_features(data[task_id]).values
+        task_id: extract_task_rule_features(data[task_id]).values
         for task_id in positive_ids
     }
     negative_rows = {
-        task_id: extract_task_features(data[task_id]).values
+        task_id: extract_task_rule_features(data[task_id]).values
         for task_id in sorted(other_group_ids)
     }
 
@@ -67,26 +67,26 @@ def main() -> None:
         group_name=args.group,
         positives=list(positive_rows.values()),
         negatives=list(negative_rows.values()),
-        concept_number=2,
+        concept_number=3,
     )
 
     print("=" * 72)
-    print("CURRICULUM LEARNING EXPERIMENT - STAGE 2")
+    print("CURRICULUM LEARNING EXPERIMENT - STAGE 3")
     print("=" * 72)
     print(f"Human group: {args.group}")
     print(f"Positive teaching tasks: {len(positive_rows)}")
     print(f"Contrast tasks: {len(negative_rows)}")
     print()
     print(f"Internal concept: {concept.concept_id}")
-    print("Strongest learned distinctions:")
+    print("Strongest learned RULE distinctions:")
 
     for key in concept.strongest_features:
         value = concept.contrast[key]
-        direction = "higher" if value > 0 else "lower"
-        print(f"  {key:50s} {direction:6s} strength={abs(value):.3f}")
+        direction = "present" if value > 0 else "absent"
+        print(f"  {key:58s} {direction:7s} strength={abs(value):.3f}")
 
     print()
-    print("How well the learner matches Eric's sorting:")
+    print("How well the rule concept matches Eric's sorting:")
 
     ranked = []
     all_rows = {**positive_rows, **negative_rows}
@@ -98,9 +98,22 @@ def main() -> None:
 
     ranked.sort(reverse=True)
 
-    for score, task_id, expected in ranked[:20]:
+    for score, task_id, expected in ranked[:25]:
         marker = "TEACH" if expected else "other"
         print(f"  {score:0.4f}  {marker:5s}  {task_id}")
+
+    print()
+    print("Teaching-task rule signatures:")
+    for task_id in positive_ids:
+        print(f"  {task_id}")
+        features = positive_rows[task_id]
+        active = [
+            key
+            for key, value in features.items()
+            if key.startswith("all_") and value >= 0.5
+        ]
+        for key in active:
+            print(f"    {key}")
 
     output_dir = Path("learned")
     output_dir.mkdir(exist_ok=True)
@@ -109,7 +122,7 @@ def main() -> None:
     output_path = output_dir / f"{safe_name}.json"
 
     payload = {
-        "stage": "relationship_concept",
+        "stage": "rule_invariant_concept",
         "human_group": args.group,
         "teaching_task_ids": positive_ids,
         "concept": asdict(concept),
@@ -117,9 +130,10 @@ def main() -> None:
             task_id: score_against_concept(features, concept)
             for task_id, features in all_rows.items()
         },
-        "teaching_features": positive_rows,
+        "teaching_rule_features": positive_rows,
         "next_stage": (
-            "discover exact transformation families inside the human-created group"
+            "split the broad family into exact reconstruction operations "
+            "while keeping these learned invariants as shared vocabulary"
         ),
     }
 
@@ -130,8 +144,8 @@ def main() -> None:
     print(f"Saved learned concept to: {output_path}")
     print()
     print(
-        "Stage 2 adds input/output relationship features: solid regions, "
-        "output-size matches, removed colors, crops, and transformed crops."
+        "Stage 3 asks what relationship stays true across EVERY training "
+        "pair in each task. This is the first rule-level representation."
     )
 
 
