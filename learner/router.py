@@ -15,37 +15,11 @@ from learner.model import learn_group_concept, score_against_concept
 # than learning it as a competing concept.
 UNCLASSIFIED_GROUPS = {"nothing"}
 
-# Surface bookkeeping can accidentally become highly discriminative on a
-# small curriculum even though it says little about HOW a task is solved.
-# Specialists are therefore prevented from choosing these as their defining
-# questions. The raw features still exist for diagnostics.
-SPECIALIST_EXCLUDED_FEATURES = {
-    "train_pair_count",
-    "mean_input_height",
-    "mean_input_width",
-    "mean_input_area",
-    "mean_output_height",
-    "mean_output_width",
-    "mean_output_area",
-    "range_input_height",
-    "range_input_width",
-    "range_input_area",
-    "range_output_height",
-    "range_output_width",
-    "range_output_area",
-    "mean_input_color_count",
-    "mean_output_color_count",
-    "range_input_color_count",
-    "range_output_color_count",
-}
-
-
 def _specialist_filter(features: dict[str, float]) -> dict[str, float]:
-    return {
-        key: value
-        for key, value in features.items()
-        if key not in SPECIALIST_EXCLUDED_FEATURES
-    }
+    # Keep the full vocabulary. The previous hard filter hurt routing badly,
+    # so surface clues are allowed again and will be controlled by blending
+    # coarse and specialist scores instead of deleting information.
+    return dict(features)
 
 
 def _learnable_groups(
@@ -126,9 +100,9 @@ def build_group_concepts(
         small rule-level vocabulary used only to narrow the neighborhood.
 
     specialist:
-        richer structural vocabulary. Each group learns its own strongest
-        questions, but raw size/count bookkeeping is excluded so specialists
-        are pushed toward transformation and relationship clues.
+        richer vocabulary. Each group learns its own strongest questions.
+        Surface clues remain available, but final routing blends this layer
+        with the coarse structural score so neither layer can dominate alone.
     """
     coarse_rows, specialist_rows = _feature_rows(data)
 
@@ -161,11 +135,50 @@ def _rank(
     return ranked
 
 
+
+def _blend_ranked_candidates(
+    coarse_ranked: list[dict[str, Any]],
+    specialist_ranked: list[dict[str, Any]],
+    specialist_concepts: dict[str, Any],
+    coarse_weight: float,
+) -> list[dict[str, Any]]:
+    coarse_scores = {
+        item["group"]: item["score"]
+        for item in coarse_ranked
+    }
+    specialist_weight = 1.0 - coarse_weight
+
+    blended = []
+    for item in specialist_ranked:
+        group_name = item["group"]
+        coarse_score = coarse_scores.get(group_name, 0.0)
+        specialist_score = item["score"]
+        final_score = (
+            coarse_weight * coarse_score
+            + specialist_weight * specialist_score
+        )
+        blended.append(
+            {
+                "group": group_name,
+                "coarse_score": coarse_score,
+                "specialist_score": specialist_score,
+                "score": final_score,
+                "questions": list(
+                    specialist_concepts[group_name].strongest_features
+                ),
+            }
+        )
+
+    blended.sort(key=lambda item: (-item["score"], item["group"]))
+    return blended
+
+
 def rank_groups_for_task(
     task: dict[str, Any],
     concepts: dict[str, Any],
     top_k: int = 3,
     coarse_k: int = 6,
+    coarse_weight: float = 0.5,
 ) -> list[dict[str, Any]]:
     """
     Two-stage route:
@@ -196,27 +209,13 @@ def rank_groups_for_task(
         specialist_candidates,
     )
 
-    coarse_scores = {
-        item["group"]: item["score"]
-        for item in coarse_ranked
-    }
-
-    results = []
-    for item in specialist_ranked[:top_k]:
-        group_name = item["group"]
-        results.append(
-            {
-                "group": group_name,
-                "specialist_score": item["score"],
-                "coarse_score": coarse_scores.get(group_name, 0.0),
-                "score": item["score"],
-                "questions": list(
-                    concepts["specialist"][group_name].strongest_features
-                ),
-            }
-        )
-
-    return results
+    blended = _blend_ranked_candidates(
+        coarse_ranked=coarse_ranked,
+        specialist_ranked=specialist_ranked,
+        specialist_concepts=concepts["specialist"],
+        coarse_weight=coarse_weight,
+    )
+    return blended[:top_k]
 
 
 def evaluate_known_groups(
@@ -224,6 +223,7 @@ def evaluate_known_groups(
     groups: dict[str, list[str]],
     top_k: int = 3,
     coarse_k: int = 6,
+    coarse_weights: tuple[float, ...] = (0.25, 0.5, 0.75),
 ) -> dict[str, Any]:
     coarse_rows, specialist_rows = _feature_rows(data)
 
@@ -236,9 +236,13 @@ def evaluate_known_groups(
 
     learnable = _learnable_groups(groups)
 
-    results: list[dict[str, Any]] = []
-    top1 = 0
-    top3 = 0
+    results_by_weight: dict[str, list[dict[str, Any]]] = {
+        f"{weight:.2f}": [] for weight in coarse_weights
+    }
+    stats = {
+        f"{weight:.2f}": {"top1": 0, "top3": 0}
+        for weight in coarse_weights
+    }
     coarse_hit = 0
     evaluated = 0
     singleton_skipped = 0
@@ -248,32 +252,37 @@ def evaluate_known_groups(
         if expected_group in UNCLASSIFIED_GROUPS:
             unclassified_count += 1
             full_concepts = build_group_concepts(data, groups)
-            ranked = rank_groups_for_task(
-                data[task_id],
-                full_concepts,
-                top_k=top_k,
-                coarse_k=coarse_k,
-            )
-            results.append(
-                {
-                    "task_id": task_id,
-                    "expected_group": expected_group,
-                    "status": "human_unclassified",
-                    "predictions": ranked,
-                }
-            )
+            for weight in coarse_weights:
+                key = f"{weight:.2f}"
+                ranked = rank_groups_for_task(
+                    data[task_id],
+                    full_concepts,
+                    top_k=top_k,
+                    coarse_k=coarse_k,
+                    coarse_weight=weight,
+                )
+                results_by_weight[key].append(
+                    {
+                        "task_id": task_id,
+                        "expected_group": expected_group,
+                        "status": "human_unclassified",
+                        "predictions": ranked,
+                    }
+                )
             continue
 
         if len([x for x in learnable[expected_group] if x in data]) < 2:
             singleton_skipped += 1
-            results.append(
-                {
-                    "task_id": task_id,
-                    "expected_group": expected_group,
-                    "status": "singleton_not_loo_evaluated",
-                    "predictions": [],
-                }
-            )
+            for weight in coarse_weights:
+                key = f"{weight:.2f}"
+                results_by_weight[key].append(
+                    {
+                        "task_id": task_id,
+                        "expected_group": expected_group,
+                        "status": "singleton_not_loo_evaluated",
+                        "predictions": [],
+                    }
+                )
             continue
 
         coarse_concepts = _learn_concepts_for_rows(
@@ -313,42 +322,53 @@ def evaluate_known_groups(
             specialist_candidates,
         )
 
-        coarse_scores = {
-            item["group"]: item["score"]
-            for item in coarse_ranked
-        }
+        for weight in coarse_weights:
+            key = f"{weight:.2f}"
+            blended = _blend_ranked_candidates(
+                coarse_ranked=coarse_ranked,
+                specialist_ranked=specialist_ranked,
+                specialist_concepts=specialist_concepts,
+                coarse_weight=weight,
+            )[:top_k]
 
-        ranked = []
-        for item in specialist_ranked[:top_k]:
-            group_name = item["group"]
-            ranked.append(
+            predicted_groups = [item["group"] for item in blended]
+            if predicted_groups and predicted_groups[0] == expected_group:
+                stats[key]["top1"] += 1
+            if expected_group in predicted_groups:
+                stats[key]["top3"] += 1
+
+            results_by_weight[key].append(
                 {
-                    "group": group_name,
-                    "specialist_score": item["score"],
-                    "coarse_score": coarse_scores.get(group_name, 0.0),
-                    "score": item["score"],
-                    "questions": list(
-                        specialist_concepts[group_name].strongest_features
-                    ),
+                    "task_id": task_id,
+                    "expected_group": expected_group,
+                    "status": "evaluated",
+                    "coarse_candidates": coarse_candidates,
+                    "predictions": blended,
                 }
             )
 
-        predicted_groups = [item["group"] for item in ranked]
+    experiments = {}
+    for weight in coarse_weights:
+        key = f"{weight:.2f}"
+        top1 = stats[key]["top1"]
+        top3 = stats[key]["top3"]
+        experiments[key] = {
+            "coarse_weight": weight,
+            "specialist_weight": 1.0 - weight,
+            "top1_correct": top1,
+            "top3_correct": top3,
+            "top1_accuracy": top1 / evaluated if evaluated else 0.0,
+            "top3_accuracy": top3 / evaluated if evaluated else 0.0,
+            "results": results_by_weight[key],
+        }
 
-        if predicted_groups and predicted_groups[0] == expected_group:
-            top1 += 1
-        if expected_group in predicted_groups:
-            top3 += 1
-
-        results.append(
-            {
-                "task_id": task_id,
-                "expected_group": expected_group,
-                "status": "evaluated",
-                "coarse_candidates": coarse_candidates,
-                "predictions": ranked,
-            }
-        )
+    best_key = max(
+        experiments,
+        key=lambda key: (
+            experiments[key]["top3_accuracy"],
+            experiments[key]["top1_accuracy"],
+        ),
+    )
 
     return {
         "evaluated_tasks": evaluated,
@@ -357,11 +377,9 @@ def evaluate_known_groups(
         "coarse_candidate_size": coarse_k,
         "coarse_hit_count": coarse_hit,
         "coarse_hit_accuracy": coarse_hit / evaluated if evaluated else 0.0,
-        "top1_correct": top1,
-        "top3_correct": top3,
-        "top1_accuracy": top1 / evaluated if evaluated else 0.0,
-        "top3_accuracy": top3 / evaluated if evaluated else 0.0,
-        "results": results,
+        "experiments": experiments,
+        "best_weight_key": best_key,
+        "best": experiments[best_key],
     }
 
 
