@@ -63,7 +63,7 @@ def main() -> None:
     print("=" * 72)
     print("FULL TASK-GROUP ROUTER EXPERIMENT")
     print("=" * 72)
-    print(f"Learnable human groups: {len(concepts)}")
+    print(f"Learnable human groups: {len(concepts['specialist'])}")
     print('"nothing" treated as UNKNOWN, not a learned rule family')
     print(f"Tasks LOO-evaluated: {evaluation['evaluated_tasks']}")
     print(
@@ -76,19 +76,24 @@ def main() -> None:
     )
     print()
     print(
-        f"Top-1 human-group match: "
+        f"Coarse neighborhood hit (top {evaluation['coarse_candidate_size']}): "
+        f"{evaluation['coarse_hit_count']}/{evaluation['evaluated_tasks']} "
+        f"({evaluation['coarse_hit_accuracy']:.1%})"
+    )
+    print(
+        f"Top-1 human-group match after specialist rerank: "
         f"{evaluation['top1_correct']}/{evaluation['evaluated_tasks']} "
         f"({evaluation['top1_accuracy']:.1%})"
     )
     print(
-        f"Top-3 human-group match: "
+        f"Top-3 human-group match after specialist rerank: "
         f"{evaluation['top3_correct']}/{evaluation['evaluated_tasks']} "
         f"({evaluation['top3_accuracy']:.1%})"
     )
 
     print()
     print("TASK ROUTING RESULTS")
-    print("Expected group -> learner's top 3 guesses")
+    print("Expected group -> learner's top 3 guesses after group-specific questions")
     print()
 
     for result in evaluation["results"]:
@@ -131,9 +136,10 @@ def main() -> None:
     print()
     print(
         "\"nothing\" is now an UNKNOWN/fallback state, not a rule family. "
-        "This is a ROUTER, not a final solver. Later, a task can use the "
-        "top-ranked group as the first rule toolbox, try the next group if "
-        "exact reconstruction fails, and only then fall back to wider search."
+        "Routing now happens in two stages: generic features narrow the "
+        "neighborhood, then each candidate group uses its own learned "
+        "feature vocabulary to rerank the candidates. This is still a "
+        "router, not a final solver."
     )
 
 
