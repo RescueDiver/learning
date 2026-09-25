@@ -6,7 +6,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 from learner.features import extract_task_rule_features
-from learner.model import learn_group_concept, score_against_concept
+from learner.refinement import (
+    best_subconcept_match,
+    discover_subconcepts,
+    shared_parent_features,
+)
 
 
 def load_json(path: Path):
@@ -16,7 +20,7 @@ def load_json(path: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Teach a broad ARC group before refining its tasks."
+        description="Teach a broad ARC group, then refine it into sub-concepts."
     )
     parser.add_argument(
         "--group",
@@ -43,13 +47,13 @@ def main() -> None:
         )
 
     positive_ids = [task_id for task_id in groups[args.group] if task_id in data]
-    other_group_ids = {
+    other_ids = sorted({
         task_id
         for group_name, task_ids in groups.items()
         if group_name != args.group
         for task_id in task_ids
         if task_id in data
-    }
+    })
 
     if not positive_ids:
         raise SystemExit("Selected group has no usable tasks.")
@@ -60,60 +64,58 @@ def main() -> None:
     }
     negative_rows = {
         task_id: extract_task_rule_features(data[task_id]).values
-        for task_id in sorted(other_group_ids)
+        for task_id in other_ids
     }
 
-    concept = learn_group_concept(
-        group_name=args.group,
-        positives=list(positive_rows.values()),
-        negatives=list(negative_rows.values()),
-        concept_number=3,
-    )
+    parent_features = shared_parent_features(positive_rows)
+    subconcepts = discover_subconcepts(positive_rows)
 
     print("=" * 72)
-    print("CURRICULUM LEARNING EXPERIMENT - STAGE 3")
+    print("CURRICULUM LEARNING EXPERIMENT - STAGE 4")
     print("=" * 72)
     print(f"Human group: {args.group}")
-    print(f"Positive teaching tasks: {len(positive_rows)}")
+    print(f"Teaching tasks: {len(positive_rows)}")
     print(f"Contrast tasks: {len(negative_rows)}")
     print()
-    print(f"Internal concept: {concept.concept_id}")
-    print("Strongest learned RULE distinctions:")
 
-    for key in concept.strongest_features:
-        value = concept.contrast[key]
-        direction = "present" if value > 0 else "absent"
-        print(f"  {key:58s} {direction:7s} strength={abs(value):.3f}")
-
-    print()
-    print("How well the rule concept matches Eric's sorting:")
-
-    ranked = []
-    all_rows = {**positive_rows, **negative_rows}
-
-    for task_id, features in all_rows.items():
-        score = score_against_concept(features, concept)
-        expected = task_id in positive_rows
-        ranked.append((score, task_id, expected))
-
-    ranked.sort(reverse=True)
-
-    for score, task_id, expected in ranked[:25]:
-        marker = "TEACH" if expected else "other"
-        print(f"  {score:0.4f}  {marker:5s}  {task_id}")
+    print("Shared parent concept:")
+    if parent_features:
+        for feature in parent_features:
+            print(f"  {feature}")
+    else:
+        print("  (no all-pair invariant shared by every teaching task)")
 
     print()
-    print("Teaching-task rule signatures:")
-    for task_id in positive_ids:
-        print(f"  {task_id}")
-        features = positive_rows[task_id]
-        active = [
-            key
-            for key, value in features.items()
-            if key.startswith("all_") and value >= 0.5
-        ]
-        for key in active:
-            print(f"    {key}")
+    print("Learned sub-concepts:")
+    for concept in subconcepts:
+        print(f"  {concept.concept_id}")
+        print(f"    teaching tasks: {', '.join(concept.task_ids)}")
+
+        if concept.distinguishing_features:
+            print("    distinguishing rules:")
+            for feature in concept.distinguishing_features:
+                print(f"      {feature}")
+        else:
+            print("    distinguishing rules: parent concept only")
+
+    print()
+    print("Teaching-task matches:")
+    for task_id, features in positive_rows.items():
+        concept_id, score = best_subconcept_match(features, subconcepts)
+        print(f"  {task_id} -> {concept_id}  score={score:.4f}")
+
+    print()
+    print("Closest outside tasks:")
+    outside_matches = []
+
+    for task_id, features in negative_rows.items():
+        concept_id, score = best_subconcept_match(features, subconcepts)
+        outside_matches.append((score, task_id, concept_id))
+
+    outside_matches.sort(reverse=True)
+
+    for score, task_id, concept_id in outside_matches[:20]:
+        print(f"  {score:.4f}  {task_id} -> {concept_id}")
 
     output_dir = Path("learned")
     output_dir.mkdir(exist_ok=True)
@@ -122,18 +124,23 @@ def main() -> None:
     output_path = output_dir / f"{safe_name}.json"
 
     payload = {
-        "stage": "rule_invariant_concept",
+        "stage": "subconcept_refinement",
         "human_group": args.group,
         "teaching_task_ids": positive_ids,
-        "concept": asdict(concept),
-        "task_scores": {
-            task_id: score_against_concept(features, concept)
-            for task_id, features in all_rows.items()
-        },
+        "parent_required_features": list(parent_features),
+        "subconcepts": [asdict(concept) for concept in subconcepts],
         "teaching_rule_features": positive_rows,
+        "outside_matches": [
+            {
+                "task_id": task_id,
+                "subconcept_id": concept_id,
+                "score": score,
+            }
+            for score, task_id, concept_id in outside_matches
+        ],
         "next_stage": (
-            "split the broad family into exact reconstruction operations "
-            "while keeping these learned invariants as shared vocabulary"
+            "for each learned subtype, search for the exact reconstruction "
+            "operation that reproduces every training output"
         ),
     }
 
@@ -141,11 +148,12 @@ def main() -> None:
         json.dump(payload, file, indent=2)
 
     print()
-    print(f"Saved learned concept to: {output_path}")
+    print(f"Saved refined concept to: {output_path}")
     print()
     print(
-        "Stage 3 asks what relationship stays true across EVERY training "
-        "pair in each task. This is the first rule-level representation."
+        "Stage 4 keeps Eric's broad group as the parent lesson, then lets "
+        "the learner invent narrower internal sub-concepts from the rules "
+        "that differ inside that group."
     )
 
 
