@@ -31,6 +31,7 @@ def learn_group_concept(
     positives: list[dict[str, float]],
     negatives: list[dict[str, float]],
     concept_number: int = 1,
+    strongest_count: int = 8,
 ) -> LearnedConcept:
     keys = sorted({key for row in positives + negatives for key in row})
 
@@ -48,7 +49,7 @@ def learn_group_concept(
         for key, _ in sorted(
             contrast.items(),
             key=lambda item: (-abs(item[1]), item[0]),
-        )[:8]
+        )[:strongest_count]
     )
 
     return LearnedConcept(
