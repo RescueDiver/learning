@@ -40,6 +40,7 @@ def main() -> None:
 
     data_path = Path("data") / "data.json"
     groups_path = Path("data") / "task_groups.json"
+    teaching_path = Path("data") / "group_teaching.json"
 
     if not data_path.exists():
         raise SystemExit(f"Training data not found: {data_path}")
@@ -48,6 +49,8 @@ def main() -> None:
 
     data = load_json(data_path)
     groups = load_json(groups_path)
+    teaching = load_json(teaching_path) if teaching_path.exists() else {}
+    group_teaching = teaching.get(args.group)
 
     if args.group not in groups:
         available = ", ".join(sorted(groups))
@@ -92,6 +95,16 @@ def main() -> None:
     print(f"Contrast tasks: {len(negative_rows)}")
     print()
 
+    if group_teaching:
+        print("HUMAN TEACHING STRUCTURE")
+        print(f"Parent idea: {group_teaching['parent_idea']}")
+        print("Known visual subfamilies:")
+        for subfamily in group_teaching.get("subfamilies", []):
+            task_list = ", ".join(subfamily.get("task_ids", []))
+            print(f"  {subfamily['name']}: {task_list}")
+            print(f"    {subfamily['description']}")
+        print()
+
     saved_passes = []
 
     # Deliberately run one view, save it, then move to the next.
@@ -115,6 +128,7 @@ def main() -> None:
             "human_group": args.group,
             "view": asdict(result),
             "teaching_task_ids": positive_ids,
+            "human_teaching": group_teaching,
         }
 
         save_json(pass_path, pass_payload)
@@ -167,6 +181,7 @@ def main() -> None:
         {
             "stage": "saved_pass_comparison",
             "human_group": args.group,
+            "human_teaching": group_teaching,
             "passes": [asdict(result) for result in saved_passes],
             "compared_ideas": [asdict(idea) for idea in comparison],
         },
@@ -178,6 +193,7 @@ def main() -> None:
         {
             "stage": "consensus_choice",
             "human_group": args.group,
+            "human_teaching": group_teaching,
             "parent_concepts": parent_choices,
             "subtype_concepts": subtype_choices,
             "weak_clues": weak_choices,
@@ -192,6 +208,11 @@ def main() -> None:
                 ),
                 "weak": (
                     "did not survive enough independently ordered runs"
+                ),
+                "human_grouping": (
+                    "the three teaching tasks are one broad problem family, "
+                    "but the known subfamilies are allowed to use different "
+                    "low-level geometries and reconstruction operations"
                 ),
             },
         },
