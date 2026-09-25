@@ -34,12 +34,15 @@ def choose_mixed_tasks(
             candidates = [
                 task_id
                 for task_id in task_ids
-                if task_id in data and task_id not in used
+                if task_id in data
             ]
             if round_index >= len(candidates):
                 continue
 
             task_id = candidates[round_index]
+            if task_id in used:
+                continue
+
             chosen.append((group_name, task_id))
             used.add(task_id)
 
